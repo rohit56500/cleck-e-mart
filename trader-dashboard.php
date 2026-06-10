@@ -1,0 +1,481 @@
+<?php
+// This is the main dashboard for traders, giving them a quick overview of their shop's performance, recent orders, and stock alerts.
+
+require_once __DIR__ . '/lib/trader_helpers.php';
+
+trader_role_guard();
+
+$userId = (int) current_user_id();
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'update_discount') {
+    $productId = (int) ($_POST['product_id'] ?? 0);
+    $percentage = (float) ($_POST['discount_percentage'] ?? 0);
+    $duration = (int) ($_POST['discount_duration'] ?? 30);
+    try {
+        trader_update_discount($userId, $productId, $percentage, $duration);
+        set_flash('success', 'Discount updated.');
+    } catch (Throwable $e) {
+        set_flash('error', $e->getMessage());
+    }
+    $shopIdPost = isset($_POST['shop_id']) && $_POST['shop_id'] ? (int) $_POST['shop_id'] : null;
+    redirect('trader-dashboard.php' . ($shopIdPost ? '?shop_id=' . $shopIdPost : ''));
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'edit_product') {
+    $productId = (int) ($_POST['product_id'] ?? 0);
+    $shopIdPost = isset($_POST['shop_id']) && $_POST['shop_id'] ? (int) $_POST['shop_id'] : null;
+    try {
+        $productImage = null;
+        if (isset($_FILES['product_image']) && $_FILES['product_image']['name'] !== '') {
+            $productImage = trader_handle_product_image_upload($_FILES['product_image']);
+        }
+
+        trader_update_product($userId, $productId, [
+            'product_name' => (string) ($_POST['product_name'] ?? ''),
+            'product_description' => (string) ($_POST['product_description'] ?? ''),
+            'price' => (float) ($_POST['price'] ?? 0),
+            'stock_quantity' => (int) ($_POST['stock_quantity'] ?? 0),
+            'product_image' => $productImage ?? '',
+            'shop_id' => $shopIdPost,
+        ]);
+
+        set_flash('success', 'Product updated successfully.');
+    } catch (Throwable $exception) {
+        set_flash('error', 'Failed to update product: ' . $exception->getMessage());
+    }
+    redirect('trader-dashboard.php' . ($shopIdPost ? '?shop_id=' . $shopIdPost : ''));
+}
+
+$shopId = isset($_GET['shop_id']) ? (int) $_GET['shop_id'] : null;
+$metrics = trader_dashboard_metrics($userId, $shopId);
+$shop = $metrics['shop'];
+$inventoryProducts = $metrics['inventory_products'];
+$lowStockProducts = $metrics['low_stock_products'];
+$pageTitle = 'Trader Dashboard | Cleck E-Mart';
+$metaDescription = 'Trader dashboard for reviewing sales, stock, and refill alerts.';
+
+$successMessage = get_flash('success');
+$errorMessage = get_flash('error');
+
+// Check trader verification status
+$traderStatus = trader_verification_status($userId);
+$isVerified = trader_is_verified($userId);
+
+require_once __DIR__ . '/lib/trader_dashboard_helpers.php';
+
+// ====================================================================
+// DYNAMIC TIMEFRAME FILTERING FOR TOP PRODUCTS
+// ====================================================================
+
+$timeframe = $_GET['timeframe'] ?? 'week';
+$validTimeframes = ['week', 'month', 'year'];
+if (!in_array($timeframe, $validTimeframes)) {
+    $timeframe = 'week';
+}
+
+$timeframeLabel = get_timeframe_label($timeframe);
+$topProducts = get_trader_top_products($shop, $inventoryProducts, $timeframe);
+
+require __DIR__ . '/components/header.php';
+?>
+<main id="main-content" class="trader-page">
+    <div class="container">
+        <?php if ($successMessage): ?>
+            <p class="page-message page-message--success"><?php echo e($successMessage); ?></p>
+        <?php endif; ?>
+        <?php if ($errorMessage): ?>
+            <p class="page-message page-message--error"><?php echo e($errorMessage); ?></p>
+        <?php endif; ?>
+        <?php if (!$isVerified): ?>
+            <div class="page-message page-message--warning" style="background-color: #fff3cd; border: 1px solid #ffc107; color: #856404; padding: 1rem;">
+                <p><strong>Account Pending Verification</strong></p>
+                <p>Your trader account is currently awaiting admin verification. Once verified, you will be able to add products and manage your shop. Thank you for your patience!</p>
+            </div>
+        <?php endif; ?>
+        <?php if ($shop === null): ?>
+            <p class="page-message page-message--error">No trader shop was found for this account.</p>
+        <?php endif; ?>
+    </div>
+
+    <div class="container">
+        <div class="admin-dashboard-layout">
+            <aside class="admin-sidebar">
+                <div class="admin-dashboard-hero">
+                    <h1 class="page-title" style="margin: 0; color: white;">Shop Dashboard</h1>
+                    <p style="margin-top: 0.5rem; opacity: 0.9;">Manage inventory for <?php echo e($shop['SHOP_NAME'] ?? 'your shop'); ?>.</p>
+                </div>
+
+                <div class="admin-tabs">
+                    <a href="trader-shops.php" class="tab-button">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline></svg>
+                        Back to My Shops
+                    </a>
+                    <hr style="border-top: 1px solid rgba(0,0,0,0.1); margin: 0.5rem 0; width: 100%;">
+                    <a href="trader-shop-profile.php?shop_id=<?php echo (int)$shopId; ?>" class="tab-button">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
+                        Shop Profile
+                    </a>
+                    <a href="trader-dashboard.php?shop_id=<?php echo (int)$shopId; ?>" class="tab-button active">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline></svg>
+                        Inventory
+                    </a>
+                    <a href="trader-orders.php?shop_id=<?php echo (int)$shopId; ?>" class="tab-button">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="21" r="1"></circle><circle cx="20" cy="21" r="1"></circle><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"></path></svg>
+                        Orders
+                    </a>
+                    <a href="trader-sales.php?shop_id=<?php echo (int)$shopId; ?>" class="tab-button">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="20" x2="12" y2="10"></line><line x1="18" y1="20" x2="18" y2="4"></line><line x1="6" y1="20" x2="6" y2="16"></line></svg>
+                        Sales
+                    </a>
+                    <a href="trader-add-product.php?shop_id=<?php echo (int)$shopId; ?>" class="tab-button">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                        Add Products
+                    </a>
+                </div>
+            </aside>
+
+            <div class="admin-content-grid" style="display: block;">
+                <section class="trader-stats" aria-label="Trader performance summary" style="margin-bottom: 3rem;">
+                    <article class="trader-stat-card">
+                        <span class="trader-stat-card__label">Products sold</span>
+                        <strong class="trader-stat-card__value"><?php echo e($metrics['sold_total']); ?></strong>
+                    </article>
+                    <article class="trader-stat-card">
+                        <span class="trader-stat-card__label">Stock available</span>
+                        <strong class="trader-stat-card__value"><?php echo e($metrics['stock_total']); ?></strong>
+                    </article>
+                    <article class="trader-stat-card">
+                        <span class="trader-stat-card__label">Need refilling</span>
+                        <strong class="trader-stat-card__value"><?php echo e($metrics['refill_count']); ?></strong>
+                    </article>
+                    <article class="trader-stat-card">
+                        <span class="trader-stat-card__label">Live listings</span>
+                        <strong class="trader-stat-card__value"><?php echo e($metrics['live_listings']); ?></strong>
+                    </article>
+                </section>
+
+                <section class="admin-section" style="margin-bottom: 2rem; display: flex; gap: 2rem;">
+                    <article class="admin-section" style="flex: 1;">
+                        <div class="trader-card__header">
+                            <div>
+                                <p class="trader-card__eyebrow">Sales snapshot</p>
+                                <h2 id="chart-title">Top products <?php echo strtolower($timeframeLabel); ?></h2>
+                            </div>
+                            
+                            <!-- Timeframe Dropdown -->
+                            <select class="trader-card__timeframe-select" id="timeframe-select" aria-label="Select timeframe">
+                                <option value="week" <?php echo $timeframe === 'week' ? 'selected' : ''; ?>>This Week</option>
+                                <option value="month" <?php echo $timeframe === 'month' ? 'selected' : ''; ?>>This Month</option>
+                                <option value="year" <?php echo $timeframe === 'year' ? 'selected' : ''; ?>>This Year</option>
+                            </select>
+                        </div>
+
+                        <div style="position: relative; height: 250px; width: 100%;">
+                            <canvas id="topProductsChart"></canvas>
+                        </div>
+                    </article>
+
+                    <aside class="admin-section" style="flex: 1;">
+                        <p class="trader-card__eyebrow">Refill alerts</p>
+                        <h2>Products to restock</h2>
+                        <div class="trader-alert-list">
+                            <?php if ($lowStockProducts === []): ?>
+                                <p class="trader-empty">No products need refilling right now.</p>
+                            <?php else: ?>
+                                <?php foreach ($lowStockProducts as $product): ?>
+                                    <article class="trader-alert-item">
+                                        <strong><?php echo e($product['PRODUCT_NAME']); ?></strong>
+                                        <span>Stock: <?php echo e($product['STOCK_QUANTITY']); ?></span>
+                                    </article>
+                                <?php endforeach; ?>
+                            <?php endif; ?>
+                        </div>
+                    </aside>
+                </section>
+
+                <section class="admin-section">
+                    <div class="trader-card__header">
+                        <div>
+                            <p class="trader-card__eyebrow">Inventory view</p>
+                            <h2>Products sold and refill status</h2>
+                        </div>
+                        <a class="trader-link" href="trader-add-product.php<?php echo isset($_GET['shop_id']) ? '?shop_id=' . (int)$_GET['shop_id'] : ''; ?>">Add new product</a>
+                    </div>
+
+                    <div class="trader-table-wrap">
+                        <table class="trader-table">
+                            <thead>
+                                <tr>
+                                    <th>Product</th>
+                                    <th>Sold</th>
+                                    <th>Stock</th>
+                                    <th>Status</th>
+                                    <th>Refill</th>
+                                    <th>Discount %</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach ($inventoryProducts as $product): ?>
+                                    <tr>
+                                        <td>
+                                            <a href="#" class="edit-product-link trader-link" 
+                                               data-id="<?php echo e($product['product_id']); ?>"
+                                               data-name="<?php echo e($product['product_name']); ?>"
+                                               data-desc="<?php echo e($product['product_description'] ?? ''); ?>"
+                                               data-price="<?php echo e($product['price'] ?? 0); ?>"
+                                               data-stock="<?php echo e($product['stock_quantity']); ?>"
+                                               data-image="<?php echo e($product['product_image'] ?? ''); ?>"
+                                               style="font-weight: 600; text-decoration: none;">
+                                                <?php echo e($product['product_name']); ?>
+                                            </a>
+                                        </td>
+                                        <td><?php echo e($product['sold_quantity']); ?></td>
+                                        <td><?php echo e($product['stock_quantity']); ?></td>
+                                        <td><?php echo e($product['product_status']); ?></td>
+                                        <td><?php echo e(((int) $product['stock_quantity'] < 10) ? 'Yes' : 'No'); ?></td>
+                                        <td>
+                                            <form method="post" action="trader-dashboard.php" style="display:inline-flex; gap:0.25rem;">
+                                                <input type="hidden" name="action" value="update_discount" />
+                                                <input type="hidden" name="product_id" value="<?php echo e($product['product_id']); ?>" />
+                                                <input type="hidden" name="shop_id" value="<?php echo e($shopId); ?>" />
+                                                <input type="number" name="discount_percentage" style="width: 60px; padding: 0.25rem;" min="0" max="100" value="<?php echo e($product['discount_percentage'] ?? ''); ?>" placeholder="%" />
+                                                <select name="discount_duration" style="width: 85px; padding: 0.25rem; font-size: 0.8rem;">
+                                                    <option value="1">1 Day</option>
+                                                    <option value="3">3 Days</option>
+                                                    <option value="5">5 Days</option>
+                                                    <option value="10">10 Days</option>
+                                                    <option value="20">20 Days</option>
+                                                    <option value="30" selected>1 Month</option>
+                                                </select>
+                                                <button type="submit" class="button button--secondary" style="padding: 0.2rem 0.5rem; font-size: 0.8rem;">Set</button>
+                                            </form>
+                                        </td>
+                                    </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+            </div>
+        </div>
+    </div>
+</main>
+
+    <!-- Edit Product Modal -->
+    <div id="editProductModal" class="trader-modal">
+        <div class="trader-modal__content">
+            <button id="closeEditModal" class="trader-modal__close" aria-label="Close modal">&times;</button>
+            <h2 class="brand" style="margin-bottom: 1.5rem; font-size: 2rem;">Edit Product</h2>
+            
+            <form id="editProductForm" class="trader-form" method="post" action="trader-dashboard.php<?php echo isset($_GET['shop_id']) ? '?shop_id=' . (int)$_GET['shop_id'] : ''; ?>" enctype="multipart/form-data">
+                <input type="hidden" name="action" value="edit_product" />
+                <input type="hidden" name="product_id" id="edit_product_id" value="" />
+                <input type="hidden" name="shop_id" value="<?php echo isset($_GET['shop_id']) ? (int)$_GET['shop_id'] : ''; ?>" />
+                
+                <div class="trader-form__grid" style="grid-template-columns: 1fr;">
+                    <label class="trader-form__full">
+                        <span>Product name</span>
+                        <input type="text" name="product_name" id="edit_product_name" required />
+                    </label>
+                    <label class="trader-form__full">
+                        <span>Description</span>
+                        <textarea name="product_description" id="edit_product_desc" rows="3" required></textarea>
+                    </label>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem;">
+                        <label>
+                            <span>Price</span>
+                            <input type="number" name="price" id="edit_product_price" min="0" step="0.01" required />
+                        </label>
+                        <label>
+                            <span>Stock available</span>
+                            <input type="number" name="stock_quantity" id="edit_product_stock" min="0" step="1" required />
+                        </label>
+                    </div>
+                    
+                    <div style="display: flex; gap: 1.5rem; align-items: flex-start; margin-top: 0.5rem;">
+                        <label class="trader-form__full" style="flex: 1; margin: 0;">
+                            <span>Product image</span>
+                            <div class="file-upload-wrapper">
+                                <button type="button" class="button file-upload-btn" onclick="document.getElementById('edit_product_image').click();">Browse files</button>
+                                <span id="edit_file_name" class="file-upload-name">No file selected</span>
+                                <input type="file" id="edit_product_image" name="product_image" accept="image/jpeg,image/png,image/webp,image/gif" />
+                            </div>
+                            <small style="display: block; margin-top: 0.5rem; color: #666;">Leave blank to keep existing image. Max: 5MB</small>
+                        </label>
+                        
+                        <div id="image_preview_container" style="width: 100px; height: 100px; border-radius: var(--radius-sm); border: 1px solid rgba(0,0,0,0.1); overflow: hidden; display: flex; align-items: center; justify-content: center; background: #f9f9f9; flex-shrink: 0;">
+                            <img id="edit_product_image_preview" src="" alt="Preview" style="max-width: 100%; max-height: 100%; object-fit: cover; display: none;" />
+                            <span id="edit_product_image_placeholder" style="color: #aaa; font-size: 0.8rem;">No Image</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="trader-form__actions" style="margin-top: 2rem;">
+                    <button class="button" type="submit" style="width: 100%;">Save Changes</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+<?php require __DIR__ . '/components/footer.php'; ?>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+    /**
+     * Handle timeframe dropdown change
+     * Reloads the page with the selected timeframe as a GET parameter
+     */
+    document.addEventListener('DOMContentLoaded', function() {
+        const timeframeSelect = document.getElementById('timeframe-select');
+        
+        if (timeframeSelect) {
+            timeframeSelect.addEventListener('change', function(e) {
+                const selectedTimeframe = e.target.value;
+                
+                // Get current URL and update the timeframe parameter
+                const url = new URL(window.location);
+                url.searchParams.set('timeframe', selectedTimeframe);
+                
+                // Reload the page with the new parameter
+                window.location.href = url.toString();
+            });
+        }
+        
+        const ctx = document.getElementById('topProductsChart');
+        if (ctx) {
+            const chartData = <?php echo json_encode($topProducts); ?>;
+            const labels = chartData.map(item => item.product_name || item.PRODUCT_NAME);
+            const data = chartData.map(item => item.sold_quantity || 0);
+            
+            new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Units Sold',
+                        data: data,
+                        backgroundColor: 'rgba(36, 73, 34, 0.8)',
+                        borderColor: 'rgba(36, 73, 34, 1)',
+                        borderWidth: 1,
+                        borderRadius: 4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            ticks: { stepSize: 1, precision: 0 }
+                        }
+                    },
+                    plugins: {
+                        legend: { display: false }
+                    }
+                }
+            });
+        }
+    });
+
+    // Edit Modal Logic
+    document.addEventListener('DOMContentLoaded', function() {
+        const editLinks = document.querySelectorAll('.edit-product-link');
+        const modal = document.getElementById('editProductModal');
+        const closeBtn = document.getElementById('closeEditModal');
+        const fileInput = document.getElementById('edit_product_image');
+        const imgPreview = document.getElementById('edit_product_image_preview');
+        const imgPlaceholder = document.getElementById('edit_product_image_placeholder');
+        
+        fileInput.addEventListener('change', function(e) {
+            const file = this.files[0];
+            document.getElementById('edit_file_name').textContent = file ? file.name : 'No file selected';
+            
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    imgPreview.src = e.target.result;
+                    imgPreview.style.display = 'block';
+                    imgPlaceholder.style.display = 'none';
+                }
+                reader.readAsDataURL(file);
+            } else {
+                imgPreview.src = '';
+                imgPreview.style.display = 'none';
+                imgPlaceholder.style.display = 'block';
+            }
+        });
+        
+        editLinks.forEach(link => {
+            link.addEventListener('click', function(e) {
+                e.preventDefault();
+                
+                // Populate form
+                document.getElementById('edit_product_id').value = this.getAttribute('data-id');
+                document.getElementById('edit_product_name').value = this.getAttribute('data-name');
+                document.getElementById('edit_product_desc').value = this.getAttribute('data-desc');
+                document.getElementById('edit_product_price').value = this.getAttribute('data-price');
+                document.getElementById('edit_product_stock').value = this.getAttribute('data-stock');
+                
+                // Reset file input
+                document.getElementById('edit_product_image').value = '';
+                document.getElementById('edit_file_name').textContent = 'No file selected';
+                
+                // Show existing image if available
+                const currentImage = this.getAttribute('data-image');
+                if (currentImage) {
+                    imgPreview.src = 'assets/images/products/' + currentImage;
+                    imgPreview.style.display = 'block';
+                    imgPlaceholder.style.display = 'none';
+                } else {
+                    imgPreview.src = '';
+                    imgPreview.style.display = 'none';
+                    imgPlaceholder.style.display = 'block';
+                }
+                
+                // Show modal
+                modal.classList.add('is-active');
+                document.body.style.overflow = 'hidden';
+                document.documentElement.classList.add('modal-open');
+            });
+        });
+        
+        closeBtn.addEventListener('click', function() {
+            modal.classList.remove('is-active');
+            document.body.style.overflow = '';
+            document.documentElement.classList.remove('modal-open');
+        });
+        
+        // Close when clicking outside content
+        modal.addEventListener('click', function(e) {
+            if (e.target === modal) {
+                modal.classList.remove('is-active');
+                document.body.style.overflow = '';
+                document.documentElement.classList.remove('modal-open');
+            }
+        });
+    });
+</script>
+
+<style>
+    html.modal-open, html.modal-open body {
+        overflow: hidden !important;
+        height: 100vh;
+    }
+    .trader-card__timeframe-select {
+        padding: 0.5rem 0.75rem;
+        border: 1px solid rgba(26, 26, 26, 0.2);
+        border-radius: 0.5rem;
+        background: white;
+        color: #1a1a1a;
+        font-size: 0.9rem;
+        cursor: pointer;
+        transition: border-color 0.3s ease, box-shadow 0.3s ease;
+    }
+    
+    .trader-card__timeframe-select:hover,
+    .trader-card__timeframe-select:focus {
+        border-color: #6a8861;
+        box-shadow: 0 0 0 2px rgba(106, 136, 97, 0.1);
+        outline: none;
+    }
+</style>
